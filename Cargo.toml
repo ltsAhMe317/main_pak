@@ -1,0 +1,22 @@
+[package]
+name = "main_pak"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "main_pak"
+path = "src/lib.rs"
+[[bin]]
+name = "pak"
+path = "src/main.rs"
+
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
+
+
+[dependencies]
+libdeflater = "*"
