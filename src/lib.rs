@@ -2,13 +2,15 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    thread,
 };
 
 use libdeflater::{CompressionLvl, Compressor, Decompressor};
 
 const PAK_SPLIT: &str = "[MAIN_PAK]";
 const PAK_MAX_SIZE_U8: usize = 268435456;
-
+const PAK_THREAD_COUNT: usize = 16;
 pub struct Paked {
     date: HashMap<PathBuf, Vec<u8>>,
 }
@@ -52,18 +54,48 @@ impl Paked {
         }
         Self { date: map }
     }
-    fn add_files(&mut self, mut files: HashMap<PathBuf, Vec<u8>>) {
-        let mut zip_context = Compressor::new(CompressionLvl::best());
-        //zip
 
-        let mut buf = vec![0; PAK_MAX_SIZE_U8];
-        for (path, date) in files.iter_mut() {
-            let size = zip_context
-                .gzip_compress(date.as_slice(), buf.as_mut_slice())
-                .unwrap();
-            *date = buf[..size].to_vec();
+    fn add_files(&mut self, files: HashMap<PathBuf, Vec<u8>>) {
+        let collect_map: Arc<Mutex<HashMap<PathBuf, Vec<u8>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let mut threads = Vec::new();
+        let files = files
+            .into_iter()
+            .map(|date| date)
+            .collect::<Vec<(PathBuf, Vec<u8>)>>();
+        let files = Arc::new(files);
+        for index in 0..if files.len() > PAK_THREAD_COUNT {
+            PAK_THREAD_COUNT
+        } else {
+            1
+        } {
+            let once_count = files.len() / PAK_THREAD_COUNT;
+            let map = collect_map.clone();
+            let files = files.clone();
+            let range = if index < PAK_THREAD_COUNT - 1 {
+                index * once_count..(index + 1) * once_count
+            } else {
+                index * once_count..files.len()
+            };
+            threads.push(thread::spawn(move || {
+                let mut compressor = Compressor::new(CompressionLvl::best());
+                let mut buf = vec![0; PAK_MAX_SIZE_U8];
+                for index in range {
+                    let (path, date) = files.get(index).unwrap();
+                    let size = compressor
+                        .gzip_compress(date.as_slice(), buf.as_mut_slice())
+                        .unwrap();
+                    map.lock()
+                        .unwrap()
+                        .insert(path.to_path_buf(), buf[0..size].to_vec());
+                }
+            }));
         }
-        self.date.extend(files);
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        self.date
+            .extend(Arc::try_unwrap(collect_map).unwrap().into_inner().unwrap());
     }
 
     pub fn fast(&self) -> FastPak {
