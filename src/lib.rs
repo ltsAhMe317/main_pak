@@ -11,8 +11,9 @@ use libdeflater::{CompressionLvl, Compressor, Decompressor};
 const PAK_SPLIT: &str = "[MAIN_PAK]";
 const PAK_MAX_SIZE_U8: usize = 268435456;
 const PAK_THREAD_COUNT: usize = 16;
+const PAK_THREAD_MIN: usize = 50;
 pub struct Paked {
-    date: HashMap<PathBuf, Vec<u8>>,
+    date: Vec<(PathBuf, Vec<u8>)>,
 }
 impl Paked {
     pub fn save(&self, path: impl AsRef<Path>) {
@@ -31,7 +32,7 @@ impl Paked {
         let read = fs::read(path).unwrap();
         let check_str = unsafe { String::from_utf8_unchecked(read) };
         let read = check_str.as_bytes();
-        let mut map = HashMap::new();
+        let mut map = Vec::new();
         let mut start: usize = 0;
         let mut path = None;
         let mut date = None;
@@ -40,10 +41,10 @@ impl Paked {
             if let Some(next) = check_str[start..].find(PAK_SPLIT) {
                 let next = next + start;
                 if path.is_some() && date.is_some() {
-                    map.insert(
+                    map.push((
                         Path::new(&String::from_utf8(path.take().unwrap()).unwrap()).to_path_buf(),
                         date.take().unwrap(),
-                    );
+                    ));
                 }
                 if path.is_none() {
                     path = Some(read[start..next].to_vec());
@@ -64,15 +65,17 @@ impl Paked {
             .map(|date| date)
             .collect::<Vec<(PathBuf, Vec<u8>)>>();
         let files = Arc::new(files);
-        for index in 0..if files.len() > PAK_THREAD_COUNT {
-            PAK_THREAD_COUNT
-        } else {
+
+        let size = if files.len() < PAK_THREAD_MIN {
             1
-        } {
-            let once_count = files.len() / PAK_THREAD_COUNT;
+        } else {
+            PAK_THREAD_COUNT
+        };
+        for index in 0..size {
+            let once_count = files.len() / size;
             let map = collect_map.clone();
             let files = files.clone();
-            let range = if index < PAK_THREAD_COUNT - 1 {
+            let range = if index < size - 1 {
                 index * once_count..(index + 1) * once_count
             } else {
                 index * once_count..files.len()
@@ -98,18 +101,46 @@ impl Paked {
             .extend(Arc::try_unwrap(collect_map).unwrap().into_inner().unwrap());
     }
 
-    pub fn fast(&self) -> FastPak {
-        let mut map = HashMap::new();
-        let mut dezip_context = Decompressor::new();
-        let mut buf = vec![0; PAK_MAX_SIZE_U8];
-        for (path, date) in self.date.iter() {
-            let size = dezip_context
-                .gzip_decompress(date.as_slice(), buf.as_mut_slice())
-                .unwrap();
-            map.insert(path.clone(), buf[..size].to_vec());
-        }
+    pub fn fast(self) -> FastPak {
+        let map = Arc::new(Mutex::new(HashMap::new()));
+        let mut threads = Vec::new();
 
-        FastPak { date: map }
+        let size = if self.date.len() < PAK_THREAD_MIN {
+            1
+        } else {
+            PAK_THREAD_COUNT
+        };
+        let date_len = self.date.len();
+        let check_map = Arc::new(self.date);
+        for index in 0..size {
+            let check_map = check_map.clone();
+            let once_size = date_len / size;
+            let map = map.clone();
+            let range = if index < size - 1 {
+                index * once_size..(index + 1) * once_size
+            } else {
+                index * once_size..date_len
+            };
+            threads.push(thread::spawn(move || {
+                let mut buf = vec![0; PAK_MAX_SIZE_U8];
+                let mut decompress = Decompressor::new();
+                for index in range {
+                    let (path, date) = check_map.get(index).unwrap();
+                    let size = decompress
+                        .gzip_decompress(date.as_slice(), buf.as_mut_slice())
+                        .unwrap();
+                    map.lock()
+                        .unwrap()
+                        .insert(path.clone(), buf[..size].to_vec());
+                }
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        FastPak {
+            date: Arc::try_unwrap(map).unwrap().into_inner().unwrap(),
+        }
     }
 }
 pub struct FastPak {
@@ -149,9 +180,7 @@ fn read_files(path: impl AsRef<Path>) -> Vec<(PathBuf, Vec<u8>)> {
 
 pub fn pak_path(path: impl AsRef<Path>) -> Paked {
     //end
-    let mut pak = Paked {
-        date: HashMap::new(),
-    };
+    let mut pak = Paked { date: Vec::new() };
     let files = read_files(path.as_ref());
 
     let path_len = path.as_ref().to_str().unwrap().len();
@@ -174,18 +203,6 @@ mod tests {
         pak_path("test_res").save("main.pak");
     }
 
-    #[test]
-    fn load() {
-        println!(
-            "{:?}",
-            String::from_utf8_lossy(
-                Paked::load("main.pak")
-                    .date
-                    .get(Path::new("test_res\\the two\\niubi.txt"))
-                    .unwrap()
-            )
-        );
-    }
     #[test]
     fn fast() {
         let load = Paked::load("main.pak");
