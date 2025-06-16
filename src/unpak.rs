@@ -30,7 +30,7 @@ fn main() {
             "get" => {
                 if fast_date.is_none() {
                     log("create fast date");
-                    fast_date = Some(date.as_ref().unwrap().fast());
+                    fast_date = Some(date.take().unwrap().fast());
                     log("fastdate created");
                 }
                 log("writing");

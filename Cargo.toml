@@ -8,8 +8,10 @@ name = "main_pak"
 path = "src/lib.rs"
 [[bin]]
 name = "pak"
-path = "src/main.rs"
-
+path = "src/pak.rs"
+[[bin]]
+name = "unpak"
+path = "src/unpak.rs"
 
 [profile.release]
 strip = true
