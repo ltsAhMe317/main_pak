@@ -1,12 +1,9 @@
 use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    thread,
+    collections::HashMap, fs, io::{Read, Write}, path::{Path, PathBuf}, sync::{Arc, Mutex}, thread
 };
 
-use libdeflater::{CompressionLvl, Compressor, Decompressor};
+use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
+
 
 const PAK_SPLIT: &str = "[MAIN_PAK]";
 const PAK_MAX_SIZE_U8: usize = 268435456;
@@ -16,20 +13,39 @@ pub struct Paked {
     date: Vec<(PathBuf, Vec<u8>)>,
 }
 impl Paked {
-    pub fn save(&self, path: impl AsRef<Path>) {
-        let mut compre = Vec::new();
-        for (path, date) in self.date.iter() {
-            //path
-            compre.extend_from_slice(PAK_SPLIT.as_bytes());
-            compre.extend_from_slice(path.to_str().unwrap().as_bytes());
-            //date
-            compre.extend_from_slice(PAK_SPLIT.as_bytes());
-            compre.extend_from_slice(date.as_slice());
-        }
-        fs::write(path, compre).unwrap();
+pub fn save(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+    // 直接创建压缩编码器写入文件
+    let file = std::fs::File::create(path)?;
+    let mut encoder = ZlibEncoder::new(file, Compression::best());
+    
+    for (i, (path, date)) in self.date.iter().enumerate() {
+        // 处理路径转换错误（替代unwrap）
+        let path_str = path.to_str().ok_or_else(|| 
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData, 
+                "Path contains invalid UTF-8"
+            )
+        )?;
+        
+        // 使用长度前缀替代分隔符
+        encoder.write_all(&(path_str.len() as u32).to_be_bytes())?;
+        encoder.write_all(path_str.as_bytes())?;
+        
+        encoder.write_all(&(date.len() as u32).to_be_bytes())?;
+        encoder.write_all(date)?;
     }
+    
+    // 确保压缩完成
+    encoder.finish()?;
+    Ok(())
+}
+ 
     pub fn load(path: impl AsRef<Path>) -> Self {
-        let read = fs::read(path).unwrap();
+        let mut encoder = ZlibDecoder::new(fs::File::open(path).unwrap());
+
+        let mut read = Vec::new();
+        encoder.read_to_end(&mut read).unwrap();
+        
         let check_str = unsafe { String::from_utf8_unchecked(read) };
         let read = check_str.as_bytes();
         let mut map = Vec::new();
@@ -57,103 +73,13 @@ impl Paked {
     }
 
     fn add_files(&mut self, files: HashMap<PathBuf, Vec<u8>>) {
-        let collect_map: Arc<Mutex<HashMap<PathBuf, Vec<u8>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let mut threads = Vec::new();
-        let files = files
-            .into_iter()
-            .map(|date| date)
-            .collect::<Vec<(PathBuf, Vec<u8>)>>();
-        let files = Arc::new(files);
-
-        let size = if files.len() < PAK_THREAD_MIN {
-            1
-        } else {
-            PAK_THREAD_COUNT
-        };
-        for index in 0..size {
-            let once_count = files.len() / size;
-            let map = collect_map.clone();
-            let files = files.clone();
-            let range = if index < size - 1 {
-                index * once_count..(index + 1) * once_count
-            } else {
-                index * once_count..files.len()
-            };
-            threads.push(thread::spawn(move || {
-                let mut compressor = Compressor::new(CompressionLvl::best());
-                let mut buf = vec![0; PAK_MAX_SIZE_U8];
-                for index in range {
-                    let (path, date) = files.get(index).unwrap();
-                    let size = compressor
-                        .gzip_compress(date.as_slice(), buf.as_mut_slice())
-                        .unwrap();
-                    map.lock()
-                        .unwrap()
-                        .insert(path.to_path_buf(), buf[0..size].to_vec());
-                }
-            }));
-        }
-        for thread in threads {
-            thread.join().unwrap();
-        }
         self.date
-            .extend(Arc::try_unwrap(collect_map).unwrap().into_inner().unwrap());
+            .extend(files);
     }
 
-    pub fn fast(self) -> FastPak {
-        let map = Arc::new(Mutex::new(HashMap::new()));
-        let mut threads = Vec::new();
+    
+}
 
-        let size = if self.date.len() < PAK_THREAD_MIN {
-            1
-        } else {
-            PAK_THREAD_COUNT
-        };
-        let date_len = self.date.len();
-        let check_map = Arc::new(self.date);
-        for index in 0..size {
-            let check_map = check_map.clone();
-            let once_size = date_len / size;
-            let map = map.clone();
-            let range = if index < size - 1 {
-                index * once_size..(index + 1) * once_size
-            } else {
-                index * once_size..date_len
-            };
-            threads.push(thread::spawn(move || {
-                let mut buf = vec![0; PAK_MAX_SIZE_U8];
-                let mut decompress = Decompressor::new();
-                for index in range {
-                    let (path, date) = check_map.get(index).unwrap();
-                    let size = decompress
-                        .gzip_decompress(date.as_slice(), buf.as_mut_slice())
-                        .unwrap();
-                    map.lock()
-                        .unwrap()
-                        .insert(path.clone(), buf[..size].to_vec());
-                }
-            }));
-        }
-        for thread in threads {
-            thread.join().unwrap();
-        }
-        FastPak {
-            date: Arc::try_unwrap(map).unwrap().into_inner().unwrap(),
-        }
-    }
-}
-pub struct FastPak {
-    date: HashMap<PathBuf, Vec<u8>>,
-}
-impl FastPak {
-    pub fn get(&self, path: impl AsRef<Path>) -> Option<&Vec<u8>> {
-        self.date.get(path.as_ref())
-    }
-    pub fn remove(&mut self, path: impl AsRef<Path>) -> Option<Vec<u8>> {
-        self.date.remove(path.as_ref())
-    }
-}
 
 fn read_files(path: impl AsRef<Path>) -> Vec<(PathBuf, Vec<u8>)> {
     if path.as_ref().is_file() {
@@ -203,14 +129,5 @@ mod tests {
         pak_path("test_res").save("main.pak");
     }
 
-    #[test]
-    fn fast() {
-        let load = Paked::load("main.pak");
-        let mut fast = load.fast();
-        println!("{:?}", fast.date.keys());
-        println!(
-            "{}",
-            String::from_utf8(fast.remove("outside.txt").unwrap()).unwrap()
-        )
-    }
+    
 }
