@@ -12,8 +12,7 @@ fn read(str: &mut String) {
 fn main() {
     let mut exit = false;
     let mut string = String::new();
-    let mut date: Option<main_pak::Paked> = None;
-    let mut fast_date = None;
+    let mut date: Option<main_pak::Pak> = None;
     while !exit {
         string.clear();
         read(&mut string);
@@ -27,22 +26,18 @@ fn main() {
                 exit = true;
                 continue;
             }
-            "get" => {
-                if fast_date.is_none() {
-                    log("create fast date");
-                    fast_date = Some(date.take().unwrap().fast());
-                    log("fastdate created");
-                }
-                log("writing");
-                fs::write(tags[2], fast_date.as_ref().unwrap().get(tags[1]).unwrap()).unwrap();
-                log("writed");
+            "list" => {
+                log("start list");
+                let date=date.as_ref().unwrap();
+                for date in date.date.iter(){
+                   println!("{:?}",date.0);
+                } 
             }
-            "title" => {}
             _ => {}
         }
         if date.is_none() {
             log("start loading");
-            date = Some(main_pak::Paked::load(string.trim()));
+            date = Some(main_pak::Pak::load(string.trim()));
             log("loaded");
         }
     }
