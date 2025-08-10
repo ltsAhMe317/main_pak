@@ -47,9 +47,7 @@ impl Pak {
         let mut read = Vec::new();
         encoder.read_to_end(&mut read).unwrap();
 
-        let check_str = unsafe { String::from_utf8_unchecked(read) };
-        dbg!(&check_str);
-        let read = check_str.as_bytes();
+        let check_str = unsafe { String::from_utf8_unchecked(read.clone()) };
         let mut map = Vec::new();
         let mut start: usize = 0;
         let mut path = None;
