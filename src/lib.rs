@@ -83,7 +83,6 @@ impl Pak {
     }
     pub fn group_dir(&self, path: impl AsRef<Path>) -> Vec<&(PathBuf, Vec<u8>)> {
         let path = path.as_ref().to_str().unwrap();
-        dbg!(path);
         let mut vec = Vec::new();
         for file @ (buf, _) in self.date.iter() {
             if &buf.to_str().unwrap()[..path.len()] == path {
